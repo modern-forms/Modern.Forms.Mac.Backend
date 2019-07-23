@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <CastXmlPath Condition="Exists('/usr/bin/castxml')">/usr/bin/castxml</CastXmlPath>
+    <CastXmlPath Condition="Exists('/usr/local/bin/castxml')">/usr/local/bin/castxml</CastXmlPath>
+    <SharpGenGeneratedCodeFolder>$(MSBuildThisFileDirectory)/Generated</SharpGenGeneratedCodeFolder>
+    <PackOnBuild>true</PackOnBuild>
+    <PackageVersion>0.0.1</PackageVersion>
+    <Authors>Jonathan Pobst</Authors>
+    <Description>Native interop bits used by Modern.Forms on OSX.</Description>
+    <PackageId>modern.forms.mac.backend</PackageId>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpGen.Runtime.COM" Version="1.2.0" />
+    <PackageReference Include="SharpGenTools.Sdk" Version="1.2.0" PrivateAssets="all" />
+    <SharpGenMapping Include="Mappings.xml" />
+  </ItemGroup>
+
+</Project>
