@@ -9,7 +9,9 @@
     <PackageVersion>0.0.1</PackageVersion>
     <Authors>Jonathan Pobst</Authors>
     <Description>Native interop bits used by Modern.Forms on OSX.</Description>
-    <PackageId>modern.forms.mac.backend</PackageId>
+    <PackageId>Modern.Forms.Mac.Backend</PackageId>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <Version>0.0.1</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
