@@ -6,12 +6,12 @@
     <CastXmlPath Condition="Exists('/usr/local/bin/castxml')">/usr/local/bin/castxml</CastXmlPath>
     <SharpGenGeneratedCodeFolder>$(MSBuildThisFileDirectory)/Generated</SharpGenGeneratedCodeFolder>
     <PackOnBuild>true</PackOnBuild>
-    <PackageVersion>0.0.1</PackageVersion>
+    <PackageVersion>0.0.2</PackageVersion>
     <Authors>Jonathan Pobst</Authors>
     <Description>Native interop bits used by Modern.Forms on OSX.</Description>
     <PackageId>Modern.Forms.Mac.Backend</PackageId>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>0.0.1</Version>
+    <Version>0.0.2</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 
@@ -27,5 +27,12 @@
     <PackageReference Include="SharpGenTools.Sdk" Version="1.2.0" PrivateAssets="all" />
     <SharpGenMapping Include="Mappings.xml" />
   </ItemGroup>
-
+  
+  <ItemGroup>
+    <Content Include="lib/libAvaloniaNative.dylib">
+      <PackagePath>runtimes/osx/native/libAvaloniaNative.dylib</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 </Project>
