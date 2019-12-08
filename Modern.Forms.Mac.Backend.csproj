@@ -6,12 +6,12 @@
     <CastXmlPath Condition="Exists('/usr/local/bin/castxml')">/usr/local/bin/castxml</CastXmlPath>
     <SharpGenGeneratedCodeFolder>$(MSBuildThisFileDirectory)/Generated</SharpGenGeneratedCodeFolder>
     <PackOnBuild>true</PackOnBuild>
-    <PackageVersion>0.0.3</PackageVersion>
+    <PackageVersion>0.0.4</PackageVersion>
     <Authors>Jonathan Pobst</Authors>
     <Description>Native interop bits used by Modern.Forms on OSX.</Description>
     <PackageId>Modern.Forms.Mac.Backend</PackageId>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>0.0.3</Version>
+    <Version>0.0.4</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 
