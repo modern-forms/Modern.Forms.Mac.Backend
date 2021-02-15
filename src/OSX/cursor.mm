@@ -1,6 +1,3 @@
-// Copyright (c) The Avalonia Project. All rights reserved.
-// Licensed under the MIT license. See licence.md file in the project root for full license information.
-
 #include "common.h"
 #include "cursor.h"
 #include <map>
@@ -63,6 +60,28 @@ public:
             (*retOut)->AddRef();
         }
             
+        return S_OK;
+    }
+    
+    virtual HRESULT CreateCustomCursor (void* bitmapData, size_t length, AvnPixelSize hotPixel, IAvnCursor** retOut) override
+    {
+        if(bitmapData == nullptr || retOut == nullptr)
+        {
+            return E_POINTER;
+        }
+        
+        NSData *imageData = [NSData dataWithBytes:bitmapData length:length];
+        NSImage *image = [[NSImage alloc] initWithData:imageData];
+        
+        
+        NSPoint hotSpot;
+        hotSpot.x = hotPixel.Width;
+        hotSpot.y = hotPixel.Height;
+        
+        *retOut = new Cursor([[NSCursor new] initWithImage: image hotSpot: hotSpot]);
+        
+        (*retOut)->AddRef();
+        
         return S_OK;
     }
 };
