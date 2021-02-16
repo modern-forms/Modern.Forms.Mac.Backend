@@ -1,0 +1,38 @@
+name: Build
+
+# Trigger the workflow on push or pull request
+on: [push]
+
+jobs:
+  build:
+    
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v1
+      
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: '3.0.x'
+
+    - name: Build with XCode
+      run: xcodebuild -sdk macosx -configuration Release -workspace src/OSX/Avalonia.Native.OSX.xcodeproj/project.xcworkspace -scheme Avalonia.Native.OSX build -derivedDataPath ./
+      
+    - name: Copy dylib
+      run: cp Build/Products/Release/libAvalonia.Native.OSX.dylib lib/libAvaloniaNative.dylib
+      
+    - name: Install CastXML
+      run: brew install castxml
+      
+    - name: Create global.json
+      run: dotnet new globaljson --sdk-version "3.0.103"
+      
+    - name: Build with dotnet
+      run: dotnet build Modern.Forms.Mac.Backend.sln -c Release
+
+    - name: Upload NuGet
+      uses: actions/upload-artifact@v1.0.0
+      with:
+        name: NuGet Package
+        path: bin/Release/
