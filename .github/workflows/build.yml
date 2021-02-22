@@ -16,6 +16,9 @@ jobs:
       with:
         dotnet-version: '3.0.x'
 
+    - name: Generate avalonia-native.h
+      run: cd build/MicroComGenerator; dotnet run -i ../../src/avn.idl --cpp ../../inc/avalonia-native.h
+      
     - name: Build with XCode
       run: xcodebuild -sdk macosx -configuration Release -workspace src/OSX/Avalonia.Native.OSX.xcodeproj/project.xcworkspace -scheme Avalonia.Native.OSX build -derivedDataPath ./
       
