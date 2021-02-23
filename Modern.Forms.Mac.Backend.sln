@@ -1,7 +1,7 @@
 
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 15
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Modern.Forms.Mac.Backend", "Modern.Forms.Mac.Backend.csproj", "{13915EA9-EA30-4ED3-8979-3B76EDEB3332}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Modern.Forms.Mac.Backend", "src\Modern.Forms.Mac.Backend.csproj", "{13915EA9-EA30-4ED3-8979-3B76EDEB3332}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

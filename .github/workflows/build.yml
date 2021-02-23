@@ -24,9 +24,9 @@ jobs:
       
     - name: Copy dylib
       run: cp Build/Products/Release/libAvalonia.Native.OSX.dylib lib/libAvaloniaNative.dylib
-      
-    - name: Install CastXML
-      run: brew install castxml
+
+    - name: Generate Interop.Generated.cs
+      run: cd build/MicroComGenerator; dotnet run -i ../../src/avn.idl --cs ../../src/Interop.Generated.cs
       
     - name: Create global.json
       run: dotnet new globaljson --sdk-version "3.0.103"
@@ -38,4 +38,4 @@ jobs:
       uses: actions/upload-artifact@v1.0.0
       with:
         name: NuGet Package
-        path: bin/Release/
+        path: src/bin/Release/
