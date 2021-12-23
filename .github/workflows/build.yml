@@ -27,11 +27,11 @@ jobs:
     - name: Copy dylib
       run: cp Build/Products/Release/libAvalonia.Native.OSX.dylib lib/libAvaloniaNative.dylib
       
-    - name: Install CastXML
-      run: brew install castxml
-      
-    - name: Create global.json
-      run: dotnet new globaljson --sdk-version "3.0.103"
+    - name: Upload dylib
+      uses: actions/upload-artifact@v1.0.0
+      with:
+        name: dylib
+        path: lib/libAvaloniaNative.dylib
       
     - name: Build with dotnet
       run: dotnet build Modern.Forms.Mac.Backend.sln -c Release
