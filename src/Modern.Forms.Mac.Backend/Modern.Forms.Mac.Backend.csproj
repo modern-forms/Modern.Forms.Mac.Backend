@@ -1,0 +1,29 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackOnBuild>true</PackOnBuild>
+    <PackageVersion>0.0.6-preview3</PackageVersion>
+    <Authors>Jonathan Pobst</Authors>
+    <Description>Native interop bits used by Modern.Forms on OSX.</Description>
+    <PackageId>Modern.Forms.Mac.Backend</PackageId>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <Version>0.0.6-preview3</Version>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AvnComIdl Include="../avn.idl" OutputFile="Interop.Generated.cs" />
+  </ItemGroup>
+
+  <Import Project="../../build/MicroCom.targets" />
+  
+  <ItemGroup>
+    <Content Include="../../lib/libAvaloniaNative.dylib">
+      <PackagePath>runtimes/osx/native/libAvaloniaNative.dylib</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>
