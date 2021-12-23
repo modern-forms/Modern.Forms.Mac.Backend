@@ -19,7 +19,7 @@ jobs:
     - name: Generate avalonia-native.h
       run: |
         export PATH="`pwd`/sdk:$PATH"
-        cd src/tools/MicroComGenerator; dotnet run -f net6.0 -i ../../avn.idl --cpp ../../../inc/avalonia-native.h
+        cd src/tools/MicroComGenerator; dotnet run -f net6.0 -c Release -i ../../avn.idl --cpp ../../../inc/avalonia-native.h
       
     - name: Build with XCode
       run: xcodebuild -sdk macosx -configuration Release -workspace src/native/Avalonia.Native.OSX.xcodeproj/project.xcworkspace -scheme Avalonia.Native.OSX build -derivedDataPath ./
