@@ -1,9 +1,20 @@
 #include "common.h"
+#include "AvnString.h"
 @interface AvnAppDelegate : NSObject<NSApplicationDelegate>
+-(AvnAppDelegate* _Nonnull) initWithEvents: (IAvnApplicationEvents* _Nonnull) events;
 @end
 
-extern NSApplicationActivationPolicy AvnDesiredActivationPolicy = NSApplicationActivationPolicyRegular;
+NSApplicationActivationPolicy AvnDesiredActivationPolicy = NSApplicationActivationPolicyRegular;
+
 @implementation AvnAppDelegate
+ComPtr<IAvnApplicationEvents> _events;
+
+- (AvnAppDelegate *)initWithEvents:(IAvnApplicationEvents *)events
+{
+    _events = events;
+    return self;
+}
+
 - (void)applicationWillFinishLaunching:(NSNotification *)notification
 {
     if([[NSApplication sharedApplication] activationPolicy] != AvnDesiredActivationPolicy)
@@ -14,6 +25,10 @@ extern NSApplicationActivationPolicy AvnDesiredActivationPolicy = NSApplicationA
         }
         
         [[NSApplication sharedApplication] setActivationPolicy: AvnDesiredActivationPolicy];
+        
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"NSFullScreenMenuItemEverywhere"];
+        
+        [[NSApplication sharedApplication] setHelpMenu: [[NSMenu new] initWithTitle:@""]];
     }
 }
 
@@ -22,11 +37,90 @@ extern NSApplicationActivationPolicy AvnDesiredActivationPolicy = NSApplicationA
     [[NSRunningApplication currentApplication] activateWithOptions:NSApplicationActivateIgnoringOtherApps];
 }
 
+- (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *> *)filenames
+{
+    auto array = CreateAvnStringArray(filenames);
+    
+    _events->FilesOpened(array);
+}
+
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls
+{
+    auto array = CreateAvnStringArray(urls);
+    
+    _events->FilesOpened(array);
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
+{
+    return _events->TryShutdown() ? NSTerminateNow : NSTerminateCancel;
+}
+
 @end
 
-extern void InitializeAvnApp()
+@interface AvnApplication : NSApplication
+
+@end
+
+@implementation AvnApplication
 {
-    NSApplication* app = [NSApplication sharedApplication];
-    id delegate = [AvnAppDelegate new];
+    BOOL _isHandlingSendEvent;
+}
+
+- (void)sendEvent:(NSEvent *)event
+{
+    bool oldHandling = _isHandlingSendEvent;
+    _isHandlingSendEvent = true;
+    @try {
+        [super sendEvent: event];
+    } @finally {
+        _isHandlingSendEvent = oldHandling;
+    }
+}
+
+// This is needed for certain embedded controls
+- (BOOL) isHandlingSendEvent
+{
+    return _isHandlingSendEvent;
+}
+
+- (void)setHandlingSendEvent:(BOOL)handlingSendEvent
+{
+    _isHandlingSendEvent = handlingSendEvent;
+}
+
+@end
+
+extern void InitializeAvnApp(IAvnApplicationEvents* events)
+{
+    NSApplication* app = [AvnApplication sharedApplication];
+    id delegate = [[AvnAppDelegate alloc] initWithEvents:events];
     [app setDelegate:delegate];
+}
+
+HRESULT AvnApplicationCommands::HideApp()
+{
+    START_COM_CALL;
+    [[NSApplication sharedApplication] hide:[NSApp delegate]];
+    return S_OK;
+}
+
+HRESULT AvnApplicationCommands::ShowAll()
+{
+    START_COM_CALL;
+    [[NSApplication sharedApplication] unhideAllApplications:[NSApp delegate]];
+    return S_OK;
+}
+
+HRESULT AvnApplicationCommands::HideOthers()
+{
+    START_COM_CALL;
+    [[NSApplication sharedApplication] hideOtherApplications:[NSApp delegate]];
+    return S_OK;
+}
+
+
+extern IAvnApplicationCommands* CreateApplicationCommands()
+{
+    return new AvnApplicationCommands();
 }

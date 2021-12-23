@@ -1,50 +1,10 @@
-// Copyright (c) The Avalonia Project. All rights reserved.
-// Licensed under the MIT license. See licence.md file in the project root for full license information.
-
 #include "common.h"
 #include "window.h"
 #include "KeyTransform.h"
 #include "cursor.h"
 #include "menu.h"
 #include <OpenGL/gl.h>
-
-class SoftwareDrawingOperation
-{
-public:
-    void* Data = 0;
-    AvnFramebuffer Desc;
-    void Alloc(NSView* view)
-    {
-        auto logicalSize = [view frame].size;
-        auto pixelSize = [view convertSizeToBacking:logicalSize];
-        int w = pixelSize.width;
-        int h = pixelSize.height;
-        int stride = w * 4;
-        Data = malloc(h * stride);
-        Desc = {
-            .Data = Data,
-            .Stride = stride,
-            .Width = w,
-            .Height = h,
-            .PixelFormat = kAvnRgba8888,
-            .Dpi = AvnVector { .X = w / logicalSize.width * 96, .Y = h / logicalSize.height * 96}
-        };
-    }
-    
-    void Dealloc()
-    {
-        if(Data != NULL)
-        {
-            free(Data);
-            Data = NULL;
-        }
-    }
-    
-    ~SoftwareDrawingOperation()
-    {
-        Dealloc();
-    }
-};
+#include "rendertarget.h"
 
 class WindowBaseImpl : public virtual ComSingleObject<IAvnWindowBase, &IID_IAvnWindowBase>, public INSWindowHolder
 {
@@ -58,21 +18,32 @@ public:
         View = NULL;
         Window = NULL;
     }
+    AutoFitContentView* StandardContainer;
     AvnView* View;
     AvnWindow* Window;
     ComPtr<IAvnWindowBaseEvents> BaseEvents;
-    SoftwareDrawingOperation CurrentSwDrawingOperation;
+    ComPtr<IAvnGlContext> _glContext;
+    NSObject<IRenderTarget>* renderTarget;
     AvnPoint lastPositionSet;
     NSString* _lastTitle;
-    IAvnAppMenu* _mainMenu;
+    IAvnMenu* _mainMenu;
     
-    WindowBaseImpl(IAvnWindowBaseEvents* events)
+    bool _shown;
+    bool _inResize;
+    
+    WindowBaseImpl(IAvnWindowBaseEvents* events, IAvnGlContext* gl)
     {
+        _shown = false;
+        _inResize = false;
         _mainMenu = nullptr;
         BaseEvents = events;
+        _glContext = gl;
+        renderTarget = [[IOSurfaceRenderTarget alloc] initWithOpenGlContext: gl];
         View = [[AvnView alloc] initWithParent:this];
+        StandardContainer = [[AutoFitContentView new] initWithContent:View];
 
         Window = [[AvnWindow alloc] initWithParent:this];
+        [Window setContentView: StandardContainer];
         
         lastPositionSet.X = 100;
         lastPositionSet.Y = 100;
@@ -80,11 +51,14 @@ public:
         
         [Window setStyleMask:NSWindowStyleMaskBorderless];
         [Window setBackingType:NSBackingStoreBuffered];
-        [Window setContentView: View];
+        
+        [Window setOpaque:false];
     }
     
     virtual HRESULT ObtainNSWindowHandle(void** ret) override
     {
+        START_COM_CALL;
+        
         if (ret == nullptr)
         {
             return E_POINTER;
@@ -97,6 +71,8 @@ public:
     
     virtual HRESULT ObtainNSWindowHandleRetained(void** ret) override
     {
+        START_COM_CALL;
+        
         if (ret == nullptr)
         {
             return E_POINTER;
@@ -109,6 +85,8 @@ public:
     
     virtual HRESULT ObtainNSViewHandle(void** ret) override
     {
+        START_COM_CALL;
+        
         if (ret == nullptr)
         {
             return E_POINTER;
@@ -121,6 +99,8 @@ public:
     
     virtual HRESULT ObtainNSViewHandleRetained(void** ret) override
     {
+        START_COM_CALL;
+        
         if (ret == nullptr)
         {
             return E_POINTER;
@@ -136,25 +116,44 @@ public:
         return Window;
     }
     
-    virtual HRESULT Show() override
+    virtual HRESULT Show(bool activate, bool isDialog) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             SetPosition(lastPositionSet);
             UpdateStyle();
             
-            [Window makeKeyAndOrderFront:Window];
-            [NSApp activateIgnoringOtherApps:YES];
-            
             [Window setTitle:_lastTitle];
-            [Window setTitleVisibility:NSWindowTitleVisible];
-        
+            
+            if(ShouldTakeFocusOnShow() && activate)
+            {
+                [Window orderFront: Window];
+                [Window makeKeyAndOrderFront:Window];
+                [Window makeFirstResponder:View];
+                [NSApp activateIgnoringOtherApps:YES];
+            }
+            else
+            {
+                [Window orderFront: Window];
+            }
+            
+            _shown = true;
+            
             return S_OK;
         }
     }
     
+    virtual bool ShouldTakeFocusOnShow()
+    {
+        return true;
+    }
+    
     virtual HRESULT Hide () override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(Window != nullptr)
@@ -169,11 +168,13 @@ public:
     
     virtual HRESULT Activate () override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(Window != nullptr)
             {
-                [Window makeKeyWindow];
+                [Window makeKeyAndOrderFront:nil];
                 [NSApp activateIgnoringOtherApps:YES];
             }
         }
@@ -183,6 +184,8 @@ public:
     
     virtual HRESULT SetTopMost (bool value) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             [Window setLevel: value ? NSFloatingWindowLevel : NSNormalWindowLevel];
@@ -193,28 +196,64 @@ public:
     
     virtual HRESULT Close() override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
-            [Window close];
+            if (Window != nullptr)
+            {
+                auto window = Window;
+                Window = nullptr;
+                
+                try{
+                    // Seems to throw sometimes on application exit.
+                    [window close];
+                }
+                catch(NSException*){}
+            }
+            
             return S_OK;
         }
     }
     
     virtual HRESULT GetClientSize(AvnSize* ret) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(ret == nullptr)
                 return E_POINTER;
+            
             auto frame = [View frame];
             ret->Width = frame.size.width;
             ret->Height = frame.size.height;
+            
+            return S_OK;
+        }
+    }
+    
+    virtual HRESULT GetFrameSize(AvnSize* ret) override
+    {
+        START_COM_CALL;
+        
+        @autoreleasepool
+        {
+            if(ret == nullptr)
+                return E_POINTER;
+            
+            auto frame = [Window frame];
+            ret->Width = frame.size.width;
+            ret->Height = frame.size.height;
+            
             return S_OK;
         }
     }
     
     virtual HRESULT GetScaling (double* ret) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(ret == nullptr)
@@ -233,6 +272,8 @@ public:
     
     virtual HRESULT SetMinMaxSize (AvnSize minSize, AvnSize maxSize) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             [Window setMinSize: ToNSSize(minSize)];
@@ -242,11 +283,57 @@ public:
         }
     }
     
-    virtual HRESULT Resize(double x, double y) override
+    virtual HRESULT Resize(double x, double y, AvnPlatformResizeReason reason) override
     {
+        if(_inResize)
+        {
+            return S_OK;
+        }
+        
+        _inResize = true;
+        
+        START_COM_CALL;
+        auto resizeBlock = ResizeScope(View, reason);
+        
         @autoreleasepool
         {
-            [Window setContentSize:NSSize{x, y}];
+            auto maxSize = [Window maxSize];
+            auto minSize = [Window minSize];
+            
+            if (x < minSize.width)
+            {
+                x = minSize.width;
+            }
+            
+            if (y < minSize.height)
+            {
+                y = minSize.height;
+            }
+            
+            if (x > maxSize.width)
+            {
+                x = maxSize.width;
+            }
+            
+            if (y > maxSize.height)
+            {
+                y = maxSize.height;
+            }
+            
+            @try
+            {
+                if(!_shown)
+                {
+                    BaseEvents->Resized(AvnSize{x,y}, reason);
+                }
+                
+                [Window setContentSize:NSSize{x,y}];
+                [Window invalidateShadow];
+            }
+            @finally
+            {
+                _inResize = false;
+            }
             
             return S_OK;
         }
@@ -254,6 +341,8 @@ public:
     
     virtual HRESULT Invalidate (AvnRect rect) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             [View setNeedsDisplayInRect:[View frame]];
@@ -262,8 +351,10 @@ public:
         }
     }
     
-    virtual HRESULT SetMainMenu(IAvnAppMenu* menu) override
+    virtual HRESULT SetMainMenu(IAvnMenu* menu) override
     {
+        START_COM_CALL;
+        
         _mainMenu = menu;
         
         auto nativeMenu = dynamic_cast<AvnAppMenu*>(menu);
@@ -272,39 +363,18 @@ public:
         
         [Window applyMenu:nsmenu];
         
-        return S_OK;
-    }
-    
-    virtual HRESULT ObtainMainMenu(IAvnAppMenu** ret) override
-    {
-        if(ret == nullptr)
+        if ([Window isKeyWindow])
         {
-            return E_POINTER;
+            [Window showWindowMenuWithAppMenu];
         }
         
-        *ret = _mainMenu;
-        
         return S_OK;
-    }
-    
-    virtual bool TryLock() override
-    {
-        @autoreleasepool
-        {
-            return [View lockFocusIfCanDraw] == YES;
-        }
-    }
-    
-    virtual void Unlock() override
-    {
-        @autoreleasepool
-        {
-            [View unlockFocus];
-        }
     }
     
     virtual HRESULT BeginMoveDrag () override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             auto lastEvent = [View lastMouseDownEvent];
@@ -322,11 +392,15 @@ public:
     
     virtual HRESULT BeginResizeDrag (AvnWindowEdge edge) override
     {
+        START_COM_CALL;
+        
         return S_OK;
     }
     
     virtual HRESULT GetPosition (AvnPoint* ret) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(ret == nullptr)
@@ -347,6 +421,8 @@ public:
     
     virtual HRESULT SetPosition (AvnPoint point) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             lastPositionSet = point;
@@ -358,6 +434,8 @@ public:
     
     virtual HRESULT PointToClient (AvnPoint point, AvnPoint* ret) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(ret == nullptr)
@@ -376,6 +454,8 @@ public:
     
     virtual HRESULT PointToScreen (AvnPoint point, AvnPoint* ret) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(ret == nullptr)
@@ -393,22 +473,16 @@ public:
     
     virtual HRESULT ThreadSafeSetSwRenderedFrame(AvnFramebuffer* fb, IUnknown* dispose) override
     {
+        START_COM_CALL;
+        
         [View setSwRenderedFrame: fb dispose: dispose];
-        return S_OK;
-    }
-    
-    virtual HRESULT GetSoftwareFramebuffer(AvnFramebuffer*ret) override
-    {
-        if(![[NSThread currentThread] isMainThread])
-            return E_FAIL;
-        if(CurrentSwDrawingOperation.Data == NULL)
-            CurrentSwDrawingOperation.Alloc(View);
-        *ret = CurrentSwDrawingOperation.Desc;
         return S_OK;
     }
     
     virtual HRESULT SetCursor(IAvnCursor* cursor) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             Cursor* avnCursor = dynamic_cast<Cursor*>(cursor);
@@ -438,12 +512,84 @@ public:
     
     virtual HRESULT CreateGlRenderTarget(IAvnGlSurfaceRenderTarget** ppv) override
     {
+        START_COM_CALL;
+        
         if(View == NULL)
             return E_FAIL;
-        *ppv = ::CreateGlRenderTarget(Window, View);
+        *ppv = [renderTarget createSurfaceRenderTarget];
+        return *ppv == nil ? E_FAIL : S_OK;
+    }
+    
+    virtual HRESULT CreateNativeControlHost(IAvnNativeControlHost** retOut) override
+    {
+        START_COM_CALL;
+        
+        if(View == NULL)
+            return E_FAIL;
+        *retOut = ::CreateNativeControlHost(View);
+        return S_OK;
+    }
+    
+    virtual HRESULT SetBlurEnabled (bool enable) override
+    {
+        START_COM_CALL;
+        
+        [StandardContainer ShowBlur:enable];
+        
+        return S_OK;
+    }
+    
+    virtual HRESULT BeginDragAndDropOperation(AvnDragDropEffects effects, AvnPoint point,
+                                              IAvnClipboard* clipboard, IAvnDndResultCallback* cb,
+                                              void* sourceHandle) override
+    {
+        START_COM_CALL;
+        
+        auto item = TryGetPasteboardItem(clipboard);
+        [item setString:@"" forType:GetAvnCustomDataType()];
+        if(item == nil)
+            return E_INVALIDARG;
+        if(View == NULL)
+            return E_FAIL;
+        
+        auto nsevent = [NSApp currentEvent];
+        auto nseventType = [nsevent type];
+        
+        // If current event isn't a mouse one (probably due to malfunctioning user app)
+        // attempt to forge a new one
+        if(!((nseventType >= NSEventTypeLeftMouseDown && nseventType <= NSEventTypeMouseExited)
+           || (nseventType >= NSEventTypeOtherMouseDown && nseventType <= NSEventTypeOtherMouseDragged)))
+        {
+            auto nspoint = [Window convertBaseToScreen: ToNSPoint(point)];
+            CGPoint cgpoint = NSPointToCGPoint(nspoint);
+            auto cgevent = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, cgpoint, kCGMouseButtonLeft);
+            nsevent = [NSEvent eventWithCGEvent: cgevent];
+            CFRelease(cgevent);
+        }
+        
+        auto dragItem = [[NSDraggingItem alloc] initWithPasteboardWriter: item];
+        
+        auto dragItemImage = [NSImage imageNamed:NSImageNameMultipleDocuments];
+        NSRect dragItemRect = {(float)point.X, (float)point.Y, [dragItemImage size].width, [dragItemImage size].height};
+        [dragItem setDraggingFrame: dragItemRect contents: dragItemImage];
+        
+        int op = 0; int ieffects = (int)effects;
+        if((ieffects & (int)AvnDragDropEffects::Copy) != 0)
+            op |= NSDragOperationCopy;
+        if((ieffects & (int)AvnDragDropEffects::Link) != 0)
+            op |= NSDragOperationLink;
+        if((ieffects & (int)AvnDragDropEffects::Move) != 0)
+            op |= NSDragOperationMove;
+        [View beginDraggingSessionWithItems: @[dragItem] event: nsevent
+                                     source: CreateDraggingSource((NSDragOperation) op, cb, sourceHandle)];
         return S_OK;
     }
 
+    virtual bool IsDialog()
+    {
+        return false;
+    }
+    
 protected:
     virtual NSWindowStyleMask GetStyle()
     {
@@ -452,9 +598,10 @@ protected:
     
     void UpdateStyle()
     {
-        [Window setStyleMask:GetStyle()];
+        [Window setStyleMask: GetStyle()];
     }
     
+public:
     virtual void OnResized ()
     {
         
@@ -464,10 +611,17 @@ protected:
 class WindowImpl : public virtual WindowBaseImpl, public virtual IAvnWindow, public IWindowStateChanged
 {
 private:
-    bool _canResize = true;
-    bool _hasDecorations = true;
-    CGRect _lastUndecoratedFrame;
+    bool _canResize;
+    bool _fullScreenActive;
+    SystemDecorations _decorations;
     AvnWindowState _lastWindowState;
+    AvnWindowState _actualWindowState;
+    bool _inSetWindowState;
+    NSRect _preZoomSize;
+    bool _transitioningWindowState;
+    bool _isClientAreaExtended;
+    bool _isDialog;
+    AvnExtendClientAreaChromeHints _extendClientHints;
     
     FORWARD_IUNKNOWN()
     BEGIN_INTERFACE_MAP()
@@ -479,27 +633,85 @@ private:
     }
     
     ComPtr<IAvnWindowEvents> WindowEvents;
-    WindowImpl(IAvnWindowEvents* events) : WindowBaseImpl(events)
+    WindowImpl(IAvnWindowEvents* events, IAvnGlContext* gl) : WindowBaseImpl(events, gl)
     {
+        _isClientAreaExtended = false;
+        _extendClientHints = AvnDefaultChrome;
+        _fullScreenActive = false;
+        _canResize = true;
+        _decorations = SystemDecorationsFull;
+        _transitioningWindowState = false;
+        _inSetWindowState = false;
+        _lastWindowState = Normal;
+        _actualWindowState = Normal;
         WindowEvents = events;
         [Window setCanBecomeKeyAndMain];
         [Window disableCursorRects];
+        [Window setTabbingMode:NSWindowTabbingModeDisallowed];
+        [Window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
     }
     
-    virtual HRESULT Show () override
+    void HideOrShowTrafficLights ()
     {
-        @autoreleasepool
+        if (Window == nil)
         {
-            if([Window parentWindow] != nil)
-                [[Window parentWindow] removeChildWindow:Window];
-            WindowBaseImpl::Show();
-            
-            return SetWindowState(Normal);
+            return;
+        }
+        
+        for (id subview in Window.contentView.superview.subviews) {
+            if ([subview isKindOfClass:NSClassFromString(@"NSTitlebarContainerView")]) {
+                NSView *titlebarView = [subview subviews][0];
+                for (id button in titlebarView.subviews) {
+                    if ([button isKindOfClass:[NSButton class]])
+                    {
+                        if(_isClientAreaExtended)
+                        {
+                            auto wantsChrome = (_extendClientHints & AvnSystemChrome) || (_extendClientHints & AvnPreferSystemChrome);
+                            
+                            [button setHidden: !wantsChrome];
+                        }
+                        else
+                        {
+                            [button setHidden: (_decorations != SystemDecorationsFull)];
+                        }
+                        
+                        [button setWantsLayer:true];
+                    }
+                }
+            }
         }
     }
     
-    virtual HRESULT ShowDialog (IAvnWindow* parent) override
+    virtual HRESULT Show (bool activate, bool isDialog) override
     {
+        START_COM_CALL;
+        
+        @autoreleasepool
+        {
+            _isDialog = isDialog;
+            WindowBaseImpl::Show(activate, isDialog);
+            
+            HideOrShowTrafficLights();
+            
+            return SetWindowState(_lastWindowState);
+        }
+    }
+    
+    virtual HRESULT SetEnabled (bool enable) override
+    {
+        START_COM_CALL;
+        
+        @autoreleasepool
+        {
+            [Window setEnabled:enable];
+            return S_OK;
+        }
+    }
+    
+    virtual HRESULT SetParent (IAvnWindow* parent) override
+    {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(parent == nullptr)
@@ -509,49 +721,118 @@ private:
             if(cparent == nullptr)
                 return E_INVALIDARG;
             
+            // If one tries to show a child window with a minimized parent window, then the parent window will be
+            // restored but MacOS isn't kind enough to *tell* us that, so the window will be left in a non-interactive
+            // state. Detect this and explicitly restore the parent window ourselves to avoid this situation.
+            if (cparent->WindowState() == Minimized)
+                cparent->SetWindowState(Normal);
+            
+            [Window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenAuxiliary];
             [cparent->Window addChildWindow:Window ordered:NSWindowAbove];
-            WindowBaseImpl::Show();
+            
+            UpdateStyle();
             
             return S_OK;
         }
     }
     
+    void StartStateTransition () override
+    {
+        _transitioningWindowState = true;
+    }
+    
+    void EndStateTransition () override
+    {
+        _transitioningWindowState = false;
+    }
+    
+    SystemDecorations Decorations () override
+    {
+        return _decorations;
+    }
+    
+    AvnWindowState WindowState () override
+    {
+        return _lastWindowState;
+    }
+    
     void WindowStateChanged () override
     {
-        AvnWindowState state;
-        GetWindowState(&state);
-        WindowEvents->WindowStateChanged(state);
+        if(_shown && !_inSetWindowState && !_transitioningWindowState)
+        {
+            AvnWindowState state;
+            GetWindowState(&state);
+            
+            if(_lastWindowState != state)
+            {
+                if(_isClientAreaExtended)
+                {
+                    if(_lastWindowState == FullScreen)
+                    {
+                        // we exited fs.
+                       if(_extendClientHints & AvnOSXThickTitleBar)
+                       {
+                          Window.toolbar = [NSToolbar new];
+                          Window.toolbar.showsBaselineSeparator = false;
+                       }
+
+                       [Window setTitlebarAppearsTransparent:true];
+
+                       [StandardContainer setFrameSize: StandardContainer.frame.size];
+                    }
+                    else if(state == FullScreen)
+                    {
+                        // we entered fs.
+                        if(_extendClientHints & AvnOSXThickTitleBar)
+                        {
+                            Window.toolbar = nullptr;
+                        }
+                       
+                        [Window setTitlebarAppearsTransparent:false];
+                        
+                        [StandardContainer setFrameSize: StandardContainer.frame.size];
+                    }
+                }
+                
+                _lastWindowState = state;
+                _actualWindowState = state;
+                WindowEvents->WindowStateChanged(state);
+            }
+        }
     }
     
     bool UndecoratedIsMaximized ()
     {
-        return CGRectEqualToRect([Window frame], [Window screen].visibleFrame);
+        auto windowSize = [Window frame];
+        auto available = [Window screen].visibleFrame;
+        return CGRectEqualToRect(windowSize, available);
     }
     
     bool IsZoomed ()
     {
-        return _hasDecorations ? [Window isZoomed] : UndecoratedIsMaximized();
+        return _decorations == SystemDecorationsFull ? [Window isZoomed] : UndecoratedIsMaximized();
     }
     
     void DoZoom()
     {
-        if (_hasDecorations)
+        switch (_decorations)
         {
-            [Window performZoom:Window];
-        }
-        else
-        {
-            if (!UndecoratedIsMaximized())
-            {
-                _lastUndecoratedFrame = [Window frame];
-            }
+            case SystemDecorationsNone:
+            case SystemDecorationsBorderOnly:
+                [Window setFrame:[Window screen].visibleFrame display:true];
+                break;
+
             
-            [Window zoom:Window];
+            case SystemDecorationsFull:
+                [Window performZoom:Window];
+                break;
         }
     }
     
     virtual HRESULT SetCanResize(bool value) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             _canResize = value;
@@ -560,24 +841,81 @@ private:
         }
     }
     
-    virtual HRESULT SetHasDecorations(bool value) override
+    virtual HRESULT SetDecorations(SystemDecorations value) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
-            _hasDecorations = value;
+            auto currentWindowState = _lastWindowState;
+            _decorations = value;
+            
+            if(_fullScreenActive)
+            {
+                return S_OK;
+            }
+            
             UpdateStyle();
             
+            HideOrShowTrafficLights();
+
+            switch (_decorations)
+            {
+                case SystemDecorationsNone:
+                    [Window setHasShadow:NO];
+                    [Window setTitleVisibility:NSWindowTitleHidden];
+                    [Window setTitlebarAppearsTransparent:YES];
+                    
+                    if(currentWindowState == Maximized)
+                    {
+                        if(!UndecoratedIsMaximized())
+                        {
+                            DoZoom();
+                        }
+                    }
+                    break;
+
+                case SystemDecorationsBorderOnly:
+                    [Window setHasShadow:YES];
+                    [Window setTitleVisibility:NSWindowTitleHidden];
+                    [Window setTitlebarAppearsTransparent:YES];
+                    
+                    if(currentWindowState == Maximized)
+                    {
+                        if(!UndecoratedIsMaximized())
+                        {
+                            DoZoom();
+                        }
+                    }
+                    break;
+
+                case SystemDecorationsFull:
+                    [Window setHasShadow:YES];
+                    [Window setTitleVisibility:NSWindowTitleVisible];
+                    [Window setTitlebarAppearsTransparent:NO];
+                    [Window setTitle:_lastTitle];
+                    
+                    if(currentWindowState == Maximized)
+                    {
+                        auto newFrame = [Window contentRectForFrameRect:[Window frame]].size;
+                        
+                        [View setFrameSize:newFrame];
+                    }
+                    break;
+            }
+
             return S_OK;
         }
     }
     
-    virtual HRESULT SetTitle (void* utf8title) override
+    virtual HRESULT SetTitle (char* utf8title) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             _lastTitle = [NSString stringWithUTF8String:(const char*)utf8title];
             [Window setTitle:_lastTitle];
-            [Window setTitleVisibility:NSWindowTitleVisible];
             
             return S_OK;
         }
@@ -585,6 +923,8 @@ private:
     
     virtual HRESULT SetTitleBarColor(AvnColor color) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             float a = (float)color.Alpha / 255.0f;
@@ -614,11 +954,19 @@ private:
     
     virtual HRESULT GetWindowState (AvnWindowState*ret) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
             if(ret == nullptr)
             {
                 return E_POINTER;
+            }
+            
+            if(([Window styleMask] & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen)
+            {
+                *ret = FullScreen;
+                return S_OK;
             }
             
             if([Window isMiniaturized])
@@ -627,7 +975,7 @@ private:
                 return S_OK;
             }
             
-            if([Window isZoomed])
+            if(IsZoomed())
             {
                 *ret = Maximized;
                 return S_OK;
@@ -639,75 +987,400 @@ private:
         }
     }
     
-    virtual HRESULT SetWindowState (AvnWindowState state) override
+    virtual HRESULT TakeFocusFromChildren () override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
-            _lastWindowState = state;
-            
-            switch (state) {
-                case Maximized:
-                    lastPositionSet.X = 0;
-                    lastPositionSet.Y = 0;
-                    
-                    if([Window isMiniaturized])
-                    {
-                        [Window deminiaturize:Window];
-                    }
-                    
-                    if(!IsZoomed())
-                    {
-                        DoZoom();
-                    }
-                    break;
-                    
-                case Minimized:
-                    [Window miniaturize:Window];
-                    break;
-                    
-                default:
-                    if([Window isMiniaturized])
-                    {
-                        [Window deminiaturize:Window];
-                    }
-                    
-                    if(IsZoomed())
-                    {
-                        DoZoom();
-                    }
-                    break;
-            }
+            if(Window == nil)
+                return S_OK;
+            if([Window isKeyWindow])
+                [Window makeFirstResponder: View];
             
             return S_OK;
         }
     }
     
-protected:
-    virtual void OnResized () override
+    virtual HRESULT SetExtendClientArea (bool enable) override
     {
-        auto windowState = [Window isMiniaturized] ? Minimized
-        : (IsZoomed() ? Maximized : Normal);
+        START_COM_CALL;
         
-        if (windowState != _lastWindowState)
+        @autoreleasepool
         {
-            _lastWindowState = windowState;
+            _isClientAreaExtended = enable;
             
-            WindowEvents->WindowStateChanged(windowState);
+            if(enable)
+            {
+                Window.titleVisibility = NSWindowTitleHidden;
+                
+                [Window setTitlebarAppearsTransparent:true];
+                
+                auto wantsTitleBar = (_extendClientHints & AvnSystemChrome) || (_extendClientHints & AvnPreferSystemChrome);
+                
+                if (wantsTitleBar)
+                {
+                    [StandardContainer ShowTitleBar:true];
+                }
+                else
+                {
+                    [StandardContainer ShowTitleBar:false];
+                }
+                
+                if(_extendClientHints & AvnOSXThickTitleBar)
+                {
+                    Window.toolbar = [NSToolbar new];
+                    Window.toolbar.showsBaselineSeparator = false;
+                }
+                else
+                {
+                    Window.toolbar = nullptr;
+                }
+            }
+            else
+            {
+                Window.titleVisibility = NSWindowTitleVisible;
+                Window.toolbar = nullptr;
+                [Window setTitlebarAppearsTransparent:false];
+                View.layer.zPosition = 0;
+            }
+            
+            [Window setIsExtended:enable];
+            
+            HideOrShowTrafficLights();
+            
+            UpdateStyle();
+            
+            return S_OK;
         }
     }
     
+    virtual HRESULT SetExtendClientAreaHints (AvnExtendClientAreaChromeHints hints) override
+    {
+        START_COM_CALL;
+        
+        @autoreleasepool
+        {
+            _extendClientHints = hints;
+            
+            SetExtendClientArea(_isClientAreaExtended);
+            return S_OK;
+        }
+    }
+    
+    virtual HRESULT GetExtendTitleBarHeight (double*ret) override
+    {
+        START_COM_CALL;
+        
+        @autoreleasepool
+        {
+            if(ret == nullptr)
+            {
+                return E_POINTER;
+            }
+            
+            *ret = [Window getExtendedTitleBarHeight];
+            
+            return S_OK;
+        }
+    }
+    
+    virtual HRESULT SetExtendTitleBarHeight (double value) override
+    {
+        START_COM_CALL;
+        
+        @autoreleasepool
+        {
+            [StandardContainer SetTitleBarHeightHint:value];
+            return S_OK;
+        }
+    }
+    
+    void EnterFullScreenMode ()
+    {
+        _fullScreenActive = true;
+        
+        [Window setTitle:_lastTitle];
+        [Window toggleFullScreen:nullptr];
+    }
+    
+    void ExitFullScreenMode ()
+    {
+        [Window toggleFullScreen:nullptr];
+        
+        _fullScreenActive = false;
+        
+        SetDecorations(_decorations);
+    }
+    
+    virtual HRESULT SetWindowState (AvnWindowState state) override
+    {
+        START_COM_CALL;
+        
+        @autoreleasepool
+        {
+            if(Window == nullptr)
+            {
+                return  S_OK;
+            }
+            
+            if(_actualWindowState == state)
+            {
+                return S_OK;
+            }
+            
+            _inSetWindowState = true;
+            
+            auto currentState = _actualWindowState;
+            _lastWindowState = state;
+            
+            if(currentState == Normal)
+            {
+                _preZoomSize = [Window frame];
+            }
+            
+            if(_shown)
+            {
+                switch (state) {
+                    case Maximized:
+                        if(currentState == FullScreen)
+                        {
+                            ExitFullScreenMode();
+                        }
+                        
+                        lastPositionSet.X = 0;
+                        lastPositionSet.Y = 0;
+                        
+                        if([Window isMiniaturized])
+                        {
+                            [Window deminiaturize:Window];
+                        }
+                        
+                        if(!IsZoomed())
+                        {
+                            DoZoom();
+                        }
+                        break;
+                        
+                    case Minimized:
+                        if(currentState == FullScreen)
+                        {
+                            ExitFullScreenMode();
+                        }
+                        else
+                        {
+                            [Window miniaturize:Window];
+                        }
+                        break;
+                        
+                    case FullScreen:
+                        if([Window isMiniaturized])
+                        {
+                            [Window deminiaturize:Window];
+                        }
+                        
+                        EnterFullScreenMode();
+                        break;
+                        
+                    case Normal:
+                        if([Window isMiniaturized])
+                        {
+                            [Window deminiaturize:Window];
+                        }
+                        
+                        if(currentState == FullScreen)
+                        {
+                            ExitFullScreenMode();
+                        }
+                        
+                        if(IsZoomed())
+                        {
+                            if(_decorations == SystemDecorationsFull)
+                            {
+                                DoZoom();
+                            }
+                            else
+                            {
+                                [Window setFrame:_preZoomSize display:true];
+                                auto newFrame = [Window contentRectForFrameRect:[Window frame]].size;
+                                
+                                [View setFrameSize:newFrame];
+                            }
+                            
+                        }
+                        break;
+                }
+                
+                _actualWindowState = _lastWindowState;
+                WindowEvents->WindowStateChanged(_actualWindowState);
+            }
+            
+            
+            _inSetWindowState = false;
+            
+            return S_OK;
+        }
+    }
+
+    virtual void OnResized () override
+    {
+        if(_shown && !_inSetWindowState && !_transitioningWindowState)
+        {
+            WindowStateChanged();
+        }
+    }
+    
+    virtual bool IsDialog() override
+    {
+        return _isDialog;
+    }
+    
+protected:
     virtual NSWindowStyleMask GetStyle() override
     {
         unsigned long s = NSWindowStyleMaskBorderless;
-        if(_hasDecorations)
-            s = s | NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
-        if(_canResize)
-            s = s | NSWindowStyleMaskResizable;
+
+        switch (_decorations)
+        {
+            case SystemDecorationsNone:
+                s = s | NSWindowStyleMaskFullSizeContentView;
+                break;
+
+            case SystemDecorationsBorderOnly:
+                s = s | NSWindowStyleMaskTitled | NSWindowStyleMaskFullSizeContentView;
+                break;
+
+            case SystemDecorationsFull:
+                s = s | NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskBorderless;
+                
+                if(_canResize)
+                {
+                    s = s | NSWindowStyleMaskResizable;
+                }
+                break;
+        }
+
+        if([Window parentWindow] == nullptr)
+        {
+            s |= NSWindowStyleMaskMiniaturizable;
+        }
+        
+        if(_isClientAreaExtended)
+        {
+            s |= NSWindowStyleMaskFullSizeContentView | NSWindowStyleMaskTexturedBackground;
+        }
         return s;
     }
 };
 
 NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEventTrackingRunLoopMode, NSModalPanelRunLoopMode, NSRunLoopCommonModes, NSConnectionReplyMode, nil];
+
+@implementation AutoFitContentView
+{
+    NSVisualEffectView* _titleBarMaterial;
+    NSBox* _titleBarUnderline;
+    NSView* _content;
+    NSVisualEffectView* _blurBehind;
+    double _titleBarHeightHint;
+    bool _settingSize;
+}
+
+-(AutoFitContentView* _Nonnull) initWithContent:(NSView *)content
+{
+    _titleBarHeightHint = -1;
+    _content = content;
+    _settingSize = false;
+
+    [self setAutoresizesSubviews:true];
+    [self setWantsLayer:true];
+    
+    _titleBarMaterial = [NSVisualEffectView new];
+    [_titleBarMaterial setBlendingMode:NSVisualEffectBlendingModeWithinWindow];
+    [_titleBarMaterial setMaterial:NSVisualEffectMaterialTitlebar];
+    [_titleBarMaterial setWantsLayer:true];
+    _titleBarMaterial.hidden = true;
+    
+    _titleBarUnderline = [NSBox new];
+    _titleBarUnderline.boxType = NSBoxSeparator;
+    _titleBarUnderline.fillColor = [NSColor underPageBackgroundColor];
+    _titleBarUnderline.hidden = true;
+    
+    [self addSubview:_titleBarMaterial];
+    [self addSubview:_titleBarUnderline];
+    
+    _blurBehind = [NSVisualEffectView new];
+    [_blurBehind setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+    [_blurBehind setMaterial:NSVisualEffectMaterialLight];
+    [_blurBehind setWantsLayer:true];
+    _blurBehind.hidden = true;
+    
+    [_blurBehind setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    [_content setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    
+    [self addSubview:_blurBehind];
+    [self addSubview:_content];
+    
+    [self setWantsLayer:true];
+    return self;
+}
+
+-(void) ShowBlur:(bool)show
+{
+    _blurBehind.hidden = !show;
+}
+
+-(void) ShowTitleBar: (bool) show
+{
+    _titleBarMaterial.hidden = !show;
+    _titleBarUnderline.hidden = !show;
+}
+
+-(void) SetTitleBarHeightHint: (double) height
+{
+    _titleBarHeightHint = height;
+    
+    [self setFrameSize:self.frame.size];
+}
+
+-(void)setFrameSize:(NSSize)newSize
+{
+    if(_settingSize)
+    {
+        return;
+    }
+    
+    _settingSize = true;
+    [super setFrameSize:newSize];
+    
+    auto window = objc_cast<AvnWindow>([self window]);
+    
+    // TODO get actual titlebar size
+    
+    double height = _titleBarHeightHint == -1 ? [window getExtendedTitleBarHeight] : _titleBarHeightHint;
+    
+    NSRect tbar;
+    tbar.origin.x = 0;
+    tbar.origin.y = newSize.height - height;
+    tbar.size.width = newSize.width;
+    tbar.size.height = height;
+    
+    [_titleBarMaterial setFrame:tbar];
+    tbar.size.height = height < 1 ? 0 : 1;
+    [_titleBarUnderline setFrame:tbar];
+
+    _settingSize = false;
+}
+
+-(void) SetContent: (NSView* _Nonnull) content
+{
+    if(content != nullptr)
+    {
+        [content removeFromSuperview];
+        [self addSubview:content];
+        _content = content;
+    }
+}
+@end
 
 @implementation AvnView
 {
@@ -717,17 +1390,25 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     bool _queuedDisplayFromThread;
     NSTrackingArea* _area;
     bool _isLeftPressed, _isMiddlePressed, _isRightPressed, _isXButton1Pressed, _isXButton2Pressed, _isMouseOver;
+    AvnInputModifiers _modifierState;
     NSEvent* _lastMouseDownEvent;
     bool _lastKeyHandled;
-}
-
-- (void)dealloc
-{
+    AvnPixelSize _lastPixelSize;
+    NSObject<IRenderTarget>* _renderTarget;
+    AvnPlatformResizeReason _resizeReason;
 }
 
 - (void)onClosed
 {
-    _parent = NULL;
+    @synchronized (self)
+    {
+        _parent = nullptr;
+    }
+}
+
+-(AvnPixelSize) getPixelSize
+{
+    return _lastPixelSize;
 }
 
 - (NSEvent*) lastMouseDownEvent
@@ -735,14 +1416,43 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     return _lastMouseDownEvent;
 }
 
+- (void) updateRenderTarget
+{
+    [_renderTarget resize:_lastPixelSize withScale: [[self window] backingScaleFactor]];
+    [self setNeedsDisplayInRect:[self frame]];
+}
+
 -(AvnView*)  initWithParent: (WindowBaseImpl*) parent
 {
     self = [super init];
-    [self setWantsBestResolutionOpenGLSurface:true];
+    _renderTarget = parent->renderTarget;
     [self setWantsLayer:YES];
+    [self setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize];
+    
     _parent = parent;
     _area = nullptr;
+    _lastPixelSize.Height = 100;
+    _lastPixelSize.Width = 100;
+    [self registerForDraggedTypes: @[@"public.data", GetAvnCustomDataType()]];
+    
+    _modifierState = AvnInputModifiersNone;
     return self;
+}
+
+- (BOOL)isFlipped
+{
+    return YES;
+}
+
+- (BOOL)wantsUpdateLayer
+{
+    return YES;
+}
+
+- (void)setLayer:(CALayer *)layer
+{
+    [_renderTarget setNewLayer: layer];
+    [super setLayer: layer];
 }
 
 - (BOOL)isOpaque
@@ -774,90 +1484,62 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
         [self removeTrackingArea:_area];
         _area = nullptr;
     }
-    
+
+    if (_parent == nullptr)
+    {
+        return;
+    }
+
     NSRect rect = NSZeroRect;
     rect.size = newSize;
     
-    NSTrackingAreaOptions options = NSTrackingActiveAlways | NSTrackingMouseMoved | NSTrackingEnabledDuringMouseDrag;
+    NSTrackingAreaOptions options = NSTrackingActiveAlways | NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingEnabledDuringMouseDrag;
     _area = [[NSTrackingArea alloc] initWithRect:rect options:options owner:self userInfo:nullptr];
     [self addTrackingArea:_area];
     
     _parent->UpdateCursor();
-
-    _parent->BaseEvents->Resized(AvnSize{newSize.width, newSize.height});
+    
+    auto fsize = [self convertSizeToBacking: [self frame].size];
+    
+    if(_lastPixelSize.Width != (int)fsize.width || _lastPixelSize.Height != (int)fsize.height)
+    {
+        _lastPixelSize.Width = (int)fsize.width;
+        _lastPixelSize.Height = (int)fsize.height;
+        [self updateRenderTarget];
+    
+        auto reason = [self inLiveResize] ? ResizeUser : _resizeReason;
+        _parent->BaseEvents->Resized(AvnSize{newSize.width, newSize.height}, reason);
+    }
 }
 
-- (void) drawFb: (AvnFramebuffer*) fb
+- (void)updateLayer
 {
-    auto colorSpace = CGColorSpaceCreateDeviceRGB();
-    auto dataProvider = CGDataProviderCreateWithData(NULL, fb->Data, fb->Height*fb->Stride, NULL);
-
+    AvnInsidePotentialDeadlock deadlock;
+    if (_parent == nullptr)
+    {
+        return;
+    }
     
-    auto image = CGImageCreate(fb->Width, fb->Height, 8, 32, fb->Stride, colorSpace, kCGBitmapByteOrderDefault | kCGImageAlphaPremultipliedLast,
-                               dataProvider, nullptr, false, kCGRenderingIntentDefault);
+    _parent->BaseEvents->RunRenderPriorityJobs();
     
-    auto ctx = [NSGraphicsContext currentContext];
-    
-    [ctx saveGraphicsState];
-    auto cgc = [ctx CGContext];
-    
-    CGContextDrawImage(cgc, CGRect{0,0, fb->Width/(fb->Dpi.X/96), fb->Height/(fb->Dpi.Y/96)}, image);
-    CGImageRelease(image);
-    CGColorSpaceRelease(colorSpace);
-    CGDataProviderRelease(dataProvider);
-    
-    [ctx restoreGraphicsState];
-
+    if (_parent == nullptr)
+    {
+        return;
+    }
+        
+    _parent->BaseEvents->Paint();
 }
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    _parent->BaseEvents->RunRenderPriorityJobs();
-    @synchronized (self) {
-        if(_swRenderedFrame != NULL)
-        {
-            [self drawFb: &_swRenderedFrameBuffer];
-            return;
-        }
-    }
-    
-    auto swOp = &_parent->CurrentSwDrawingOperation;
-    _parent->BaseEvents->Paint();
-    if(swOp->Data != NULL)
-        [self drawFb: &swOp->Desc];
-    
-    swOp->Dealloc();
     return;
-}
-
--(void) redrawSelf
-{
-    @autoreleasepool
-    {
-        @synchronized(self)
-        {
-            if(!_queuedDisplayFromThread)
-                return;
-            _queuedDisplayFromThread = false;
-        }
-        [self setNeedsDisplayInRect:[self frame]];
-        [self display];
-        
-    }
 }
 
 -(void) setSwRenderedFrame: (AvnFramebuffer*) fb dispose: (IUnknown*) dispose
 {
     @autoreleasepool {
-        @synchronized (self) {
-            _swRenderedFrame = dispose;
-            _swRenderedFrameBuffer = *fb;
-            if(!_queuedDisplayFromThread)
-            {
-                _queuedDisplayFromThread = true;
-                [self performSelector:@selector(redrawSelf) onThread:[NSThread mainThread] withObject:NULL waitUntilDone:false modes: AllLoopModes];
-            }
-        }
+        [_renderTarget setSwFrame:fb];
+        dispose->Release();
     }
 }
 
@@ -867,7 +1549,7 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     return pt;
 }
 
-- (AvnPoint)toAvnPoint:(CGPoint)p
++ (AvnPoint)toAvnPoint:(CGPoint)p
 {
     AvnPoint result;
     
@@ -879,26 +1561,52 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
 
 - (void) viewDidChangeBackingProperties
 {
-    _parent->BaseEvents->ScalingChanged([_parent->Window backingScaleFactor]);
+    auto fsize = [self convertSizeToBacking: [self frame].size];
+    _lastPixelSize.Width = (int)fsize.width;
+    _lastPixelSize.Height = (int)fsize.height;
+    [self updateRenderTarget];
+    
+    if(_parent != nullptr)
+    {
+        _parent->BaseEvents->ScalingChanged([_parent->Window backingScaleFactor]);
+    }
+    
     [super viewDidChangeBackingProperties];
 }
 
-- (bool) ignoreUserInput
+- (bool) ignoreUserInput:(bool)trigerInputWhenDisabled
 {
     auto parentWindow = objc_cast<AvnWindow>([self window]);
+    
     if(parentWindow == nil || ![parentWindow shouldTryToHandleEvents])
+    {
+        if(trigerInputWhenDisabled)
+        {
+            auto window = dynamic_cast<WindowImpl*>(_parent.getRaw());
+            
+            if(window != nullptr)
+            {
+                window->WindowEvents->GotInputWhenDisabled();
+            }
+        }
+        
         return TRUE;
+    }
+    
     return FALSE;
 }
 
 - (void)mouseEvent:(NSEvent *)event withType:(AvnRawMouseEventType) type
 {
-    if([self ignoreUserInput])
-        return;
+    bool triggerInputWhenDisabled = type != Move;
     
-    [self becomeFirstResponder];
+    if([self ignoreUserInput: triggerInputWhenDisabled])
+    {
+        return;
+    }
+    
     auto localPoint = [self convertPoint:[event locationInWindow] toView:self];
-    auto avnPoint = [self toAvnPoint:localPoint];
+    auto avnPoint = [AvnView toAvnPoint:localPoint];
     auto point = [self translateLocalPoint:avnPoint];
     AvnVector delta;
     
@@ -923,9 +1631,29 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     auto timestamp = [event timestamp] * 1000;
     auto modifiers = [self getModifiers:[event modifierFlags]];
     
-    [self becomeFirstResponder];
-    _parent->BaseEvents->RawMouseEvent(type, timestamp, modifiers, point, delta);
+    if(type != AvnRawMouseEventType::Move ||
+       (
+           [self window] != nil &&
+           (
+                [[self window] firstResponder] == nil
+                || ![[[self window] firstResponder] isKindOfClass: [NSView class]]
+           )
+       )
+    )
+        [self becomeFirstResponder];
+    
+    if(_parent != nullptr)
+    {
+        _parent->BaseEvents->RawMouseEvent(type, timestamp, modifiers, point, delta);
+    }
+    
     [super mouseMoved:event];
+}
+
+- (BOOL) resignFirstResponder
+{
+    _parent->BaseEvents->LostFocus();
+    return YES;
 }
 
 - (void)mouseMoved:(NSEvent *)event
@@ -946,6 +1674,7 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
 
     switch(event.buttonNumber)
     {
+        case 2:
         case 3:
             _isMiddlePressed = true;
             [self mouseEvent:event withType:MiddleButtonDown];
@@ -978,6 +1707,7 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
 {
     switch(event.buttonNumber)
     {
+        case 2:
         case 3:
             _isMiddlePressed = false;
             [self mouseEvent:event withType:MiddleButtonUp];
@@ -1038,14 +1768,20 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
 
 - (void) keyboardEvent: (NSEvent *) event withType: (AvnRawKeyEventType)type
 {
-    if([self ignoreUserInput])
+    if([self ignoreUserInput: false])
+    {
         return;
+    }
+    
     auto key = s_KeyMap[[event keyCode]];
     
     auto timestamp = [event timestamp] * 1000;
     auto modifiers = [self getModifiers:[event modifierFlags]];
      
-    _lastKeyHandled = _parent->BaseEvents->RawKeyEvent(type, timestamp, modifiers, key);
+    if(_parent != nullptr)
+    {
+        _lastKeyHandled = _parent->BaseEvents->RawKeyEvent(type, timestamp, modifiers, key);
+    }
 }
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event
@@ -1055,6 +1791,63 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     _lastKeyHandled = false;
     
     return result;
+}
+
+- (void)flagsChanged:(NSEvent *)event
+{
+    auto newModifierState = [self getModifiers:[event modifierFlags]];
+    
+    bool isAltCurrentlyPressed = (_modifierState & Alt) == Alt;
+    bool isControlCurrentlyPressed = (_modifierState & Control) == Control;
+    bool isShiftCurrentlyPressed = (_modifierState & Shift) == Shift;
+    bool isCommandCurrentlyPressed = (_modifierState & Windows) == Windows;
+    
+    bool isAltPressed = (newModifierState & Alt) == Alt;
+    bool isControlPressed = (newModifierState & Control) == Control;
+    bool isShiftPressed = (newModifierState & Shift) == Shift;
+    bool isCommandPressed = (newModifierState & Windows) == Windows;
+    
+    
+    if (isAltPressed && !isAltCurrentlyPressed)
+    {
+        [self keyboardEvent:event withType:KeyDown];
+    }
+    else if (isAltCurrentlyPressed && !isAltPressed)
+    {
+        [self keyboardEvent:event withType:KeyUp];
+    }
+    
+    if (isControlPressed && !isControlCurrentlyPressed)
+    {
+        [self keyboardEvent:event withType:KeyDown];
+    }
+    else if (isControlCurrentlyPressed && !isControlPressed)
+    {
+        [self keyboardEvent:event withType:KeyUp];
+    }
+    
+    if (isShiftPressed && !isShiftCurrentlyPressed)
+    {
+        [self keyboardEvent:event withType:KeyDown];
+    }
+    else if(isShiftCurrentlyPressed && !isShiftPressed)
+    {
+        [self keyboardEvent:event withType:KeyUp];
+    }
+    
+    if(isCommandPressed && !isCommandCurrentlyPressed)
+    {
+        [self keyboardEvent:event withType:KeyDown];
+    }
+    else if(isCommandCurrentlyPressed && ! isCommandPressed)
+    {
+        [self keyboardEvent:event withType:KeyUp];
+    }
+    
+    _modifierState = newModifierState;
+    
+    [[self inputContext] handleEvent:event];
+    [super flagsChanged:event];
 }
 
 - (void)keyDown:(NSEvent *)event
@@ -1136,7 +1929,10 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
 {
     if(!_lastKeyHandled)
     {
-        _lastKeyHandled = _parent->BaseEvents->RawTextInputEvent(0, [string UTF8String]);
+        if(_parent != nullptr)
+        {
+            _lastKeyHandled = _parent->BaseEvents->RawTextInputEvent(0, [string UTF8String]);
+        }
     }
 }
 
@@ -1151,6 +1947,78 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     
     return result;
 }
+
+- (NSDragOperation)triggerAvnDragEvent: (AvnDragEventType) type info: (id <NSDraggingInfo>)info
+{
+    auto localPoint = [self convertPoint:[info draggingLocation] toView:self];
+    auto avnPoint = [AvnView toAvnPoint:localPoint];
+    auto point = [self translateLocalPoint:avnPoint];
+    auto modifiers = [self getModifiers:[[NSApp currentEvent] modifierFlags]];
+    NSDragOperation nsop = [info draggingSourceOperationMask];
+   
+        auto effects = ConvertDragDropEffects(nsop);
+    int reffects = (int)_parent->BaseEvents
+    ->DragEvent(type, point, modifiers, effects,
+                CreateClipboard([info draggingPasteboard], nil),
+                GetAvnDataObjectHandleFromDraggingInfo(info));
+    
+    NSDragOperation ret = 0;
+    
+    // Ensure that the managed part didn't add any new effects
+    reffects = (int)effects & (int)reffects;
+    
+    // OSX requires exactly one operation
+    if((reffects & (int)AvnDragDropEffects::Copy) != 0)
+        ret = NSDragOperationCopy;
+    else if((reffects & (int)AvnDragDropEffects::Move) != 0)
+        ret = NSDragOperationMove;
+    else if((reffects & (int)AvnDragDropEffects::Link) != 0)
+        ret = NSDragOperationLink;
+    if(ret == 0)
+        ret = NSDragOperationNone;
+    return ret;
+}
+
+- (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)sender
+{
+    return [self triggerAvnDragEvent: AvnDragEventType::Enter info:sender];
+}
+
+- (NSDragOperation)draggingUpdated:(id <NSDraggingInfo>)sender
+{
+    return [self triggerAvnDragEvent: AvnDragEventType::Over info:sender];
+}
+
+- (void)draggingExited:(id <NSDraggingInfo>)sender
+{
+    [self triggerAvnDragEvent: AvnDragEventType::Leave info:sender];
+}
+
+- (BOOL)prepareForDragOperation:(id <NSDraggingInfo>)sender
+{
+    return [self triggerAvnDragEvent: AvnDragEventType::Over info:sender] != NSDragOperationNone;
+}
+
+- (BOOL)performDragOperation:(id <NSDraggingInfo>)sender
+{
+    return [self triggerAvnDragEvent: AvnDragEventType::Drop info:sender] != NSDragOperationNone;
+}
+
+- (void)concludeDragOperation:(nullable id <NSDraggingInfo>)sender
+{
+    
+}
+
+- (AvnPlatformResizeReason)getResizeReason
+{
+    return _resizeReason;
+}
+
+- (void)setResizeReason:(AvnPlatformResizeReason)reason
+{
+    _resizeReason = reason;
+}
+
 @end
 
 
@@ -1159,23 +2027,66 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     ComPtr<WindowBaseImpl> _parent;
     bool _canBecomeKeyAndMain;
     bool _closed;
-    NSMenu* _menu;
-    bool _isAppMenuApplied;
+    bool _isEnabled;
+    bool _isExtended;
+    AvnMenu* _menu;
+    double _lastScaling;
+}
+
+-(void) setIsExtended:(bool)value;
+{
+    _isExtended = value;
+}
+
+-(bool) isDialog
+{
+    return _parent->IsDialog();
+}
+
+-(double) getScaling
+{
+    return _lastScaling;
+}
+
+-(double) getExtendedTitleBarHeight
+{
+    if(_isExtended)
+    {
+        for (id subview in self.contentView.superview.subviews)
+        {
+            if ([subview isKindOfClass:NSClassFromString(@"NSTitlebarContainerView")])
+            {
+                NSView *titlebarView = [subview subviews][0];
+
+                return (double)titlebarView.frame.size.height;
+            }
+        }
+
+        return -1;
+    }
+    else
+    {
+        return 0;
+    }
 }
 
 +(void)closeAll
 {
-    NSArray<NSWindow*>* windows = [NSArray arrayWithArray:[NSApp windows]];
-    auto numWindows = [windows count];
-    
-    for(int i = 0; i < numWindows; i++)
-    {
-        [[windows objectAtIndex:i] performClose:nil];
-    }
+    [[NSApplication sharedApplication] terminate:self];
 }
 
-- (void)dealloc
+- (void)performClose:(id)sender
 {
+    if([[self delegate] respondsToSelector:@selector(windowShouldClose:)])
+    {
+        if(![[self delegate] windowShouldClose:self]) return;
+    }
+    else if([self respondsToSelector:@selector(windowShouldClose:)])
+    {
+        if(![self windowShouldClose:self]) return;
+    }
+
+    [self close];
 }
 
 - (void)pollModalSession:(nonnull NSModalSession)session
@@ -1195,30 +2106,66 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     }
 }
 
--(void) applyMenu:(NSMenu *)menu
+-(void) showWindowMenuWithAppMenu
+{
+    if(_menu != nullptr)
+    {
+        auto appMenuItem = ::GetAppMenuItem();
+        
+        if(appMenuItem != nullptr)
+        {
+            auto appMenu = [appMenuItem menu];
+            
+            [appMenu removeItem:appMenuItem];
+            
+            [_menu insertItem:appMenuItem atIndex:0];
+            
+            [_menu setHasGlobalMenuItem:true];
+        }
+        
+        [NSApp setMenu:_menu];
+    }
+    else
+    {
+        [self showAppMenuOnly];
+    }
+}
+
+-(void) showAppMenuOnly
+{
+    auto appMenuItem = ::GetAppMenuItem();
+    
+    if(appMenuItem != nullptr)
+    {
+        auto appMenu = ::GetAppMenu();
+        
+        auto nativeAppMenu = dynamic_cast<AvnAppMenu*>(appMenu);
+        
+        [[appMenuItem menu] removeItem:appMenuItem];
+        
+        if(_menu != nullptr)
+        {
+            [_menu setHasGlobalMenuItem:false];
+        }
+        
+        [nativeAppMenu->GetNative() addItem:appMenuItem];
+        
+        [NSApp setMenu:nativeAppMenu->GetNative()];
+    }
+    else
+    {
+        [NSApp setMenu:nullptr];
+    }
+}
+
+-(void) applyMenu:(AvnMenu *)menu
 {
     if(menu == nullptr)
     {
-        menu = [NSMenu new];
+        menu = [AvnMenu new];
     }
     
     _menu = menu;
-    
-    if ([self isKeyWindow])
-    {
-        auto appMenu = ::GetAppMenuItem();
-        
-        if(appMenu != nullptr)
-        {
-            [[appMenu menu] removeItem:appMenu];
-            
-            [_menu insertItem:appMenu atIndex:0];
-            
-            _isAppMenuApplied = true;
-        }
-        
-        [NSApp setMenu:menu];
-    }
 }
 
 -(void) setCanBecomeKeyAndMain
@@ -1232,6 +2179,13 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     [self setReleasedWhenClosed:false];
     _parent = parent;
     [self setDelegate:self];
+    _closed = false;
+    _isEnabled = true;
+    
+    _lastScaling = [self backingScaleFactor];
+    [self setOpaque:NO];
+    [self setBackgroundColor: [NSColor clearColor]];
+    _isExtended = false;
     return self;
 }
 
@@ -1247,6 +2201,11 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     return true;
 }
 
+- (void)windowDidChangeBackingProperties:(NSNotification *)notification
+{
+    _lastScaling = [self backingScaleFactor];
+}
+
 - (void)windowWillClose:(NSNotification *)notification
 {
     _closed = true;
@@ -1257,15 +2216,27 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
         [self restoreParentWindow];
         parent->BaseEvents->Closed();
         [parent->View onClosed];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self setContentView: nil];
-        });
     }
 }
 
 -(BOOL)canBecomeKeyWindow
 {
-    return _canBecomeKeyAndMain;
+    if (_canBecomeKeyAndMain)
+    {
+        // If the window has a child window being shown as a dialog then don't allow it to become the key window.
+        for(NSWindow* uch in [self childWindows])
+        {
+            auto ch = objc_cast<AvnWindow>(uch);
+            if(ch == nil)
+                continue;
+            if (ch.isDialog)
+                return false;
+        }
+        
+        return true;
+    }
+    
+    return false;
 }
 
 -(BOOL)canBecomeMainWindow
@@ -1273,67 +2244,26 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     return _canBecomeKeyAndMain;
 }
 
--(bool) activateAppropriateChild: (bool)activating
-{
-    for(NSWindow* uch in [self childWindows])
-    {
-        auto ch = objc_cast<AvnWindow>(uch);
-        if(ch == nil)
-            continue;
-        [ch activateAppropriateChild:false];
-        return FALSE;
-    }
-    
-    if(!activating)
-        [self makeKeyAndOrderFront:self];
-    return TRUE;
-}
-
 -(bool)shouldTryToHandleEvents
 {
-    for(NSWindow* uch in [self childWindows])
-    {
-        auto ch = objc_cast<AvnWindow>(uch);
-        if(ch == nil)
-            continue;
-        return FALSE;
-    }
-    return TRUE;
+    return _isEnabled;
 }
 
--(void)makeKeyWindow
+-(void) setEnabled:(bool)enable
 {
-    if([self activateAppropriateChild: true])
-    {
-        [super makeKeyWindow];
-    }
+    _isEnabled = enable;
 }
 
 -(void)becomeKeyWindow
 {
-    if([self activateAppropriateChild: true])
+    [self showWindowMenuWithAppMenu];
+    
+    if(_parent != nullptr)
     {
-        if(_menu == nullptr)
-        {
-            _menu = [NSMenu new];
-        }
-        
-        auto appMenu = ::GetAppMenuItem();
-        
-        if(appMenu != nullptr)
-        {
-            [[appMenu menu] removeItem:appMenu];
-            
-            [_menu insertItem:appMenu atIndex:0];
-            
-            _isAppMenuApplied = true;
-        }
-        
-        [NSApp setMenu:_menu];
-        
         _parent->BaseEvents->Activated();
-        [super becomeKeyWindow];
     }
+
+    [super becomeKeyWindow];
 }
 
 -(void) restoreParentWindow;
@@ -1342,7 +2272,6 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     if(parent != nil)
     {
         [parent removeChildWindow:self];
-        [parent activateAppropriateChild: false];
     }
 }
 
@@ -1366,6 +2295,70 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     }
 }
 
+- (void)windowDidResize:(NSNotification *)notification
+{
+    auto parent = dynamic_cast<IWindowStateChanged*>(_parent.operator->());
+    
+    if(parent != nullptr)
+    {
+        parent->WindowStateChanged();
+    }
+}
+
+- (void)windowWillExitFullScreen:(NSNotification *)notification
+{
+    auto parent = dynamic_cast<IWindowStateChanged*>(_parent.operator->());
+    
+    if(parent != nullptr)
+    {
+        parent->StartStateTransition();
+    }
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)notification
+{
+    auto parent = dynamic_cast<IWindowStateChanged*>(_parent.operator->());
+    
+    if(parent != nullptr)
+    {
+        parent->EndStateTransition();
+        
+        if(parent->Decorations() != SystemDecorationsFull && parent->WindowState() == Maximized)
+        {
+            NSRect screenRect = [[self screen] visibleFrame];
+            [self setFrame:screenRect display:YES];
+        }
+        
+        if(parent->WindowState() == Minimized)
+        {
+            [self miniaturize:nullptr];
+        }
+        
+        parent->WindowStateChanged();
+    }
+}
+
+- (void)windowWillEnterFullScreen:(NSNotification *)notification
+{
+    auto parent = dynamic_cast<IWindowStateChanged*>(_parent.operator->());
+    
+    if(parent != nullptr)
+    {
+        parent->StartStateTransition();
+    }
+}
+
+- (void)windowDidEnterFullScreen:(NSNotification *)notification
+{
+    auto parent = dynamic_cast<IWindowStateChanged*>(_parent.operator->());
+    
+    if(parent != nullptr)
+    {
+        parent->EndStateTransition();
+        parent->WindowStateChanged();
+    }
+}
+
 - (BOOL)windowShouldZoom:(NSWindow *)window toFrame:(NSRect)newFrame
 {
     return true;
@@ -1376,26 +2369,7 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
     if(_parent)
         _parent->BaseEvents->Deactivated();
     
-    auto appMenuItem = ::GetAppMenuItem();
-    
-    if(appMenuItem != nullptr)
-    {
-        auto appMenu = ::GetAppMenu();
-        
-        auto nativeAppMenu = dynamic_cast<AvnAppMenu*>(appMenu);
-        
-        [[appMenuItem menu] removeItem:appMenuItem];
-        
-        [nativeAppMenu->GetNative() addItem:appMenuItem];
-        
-        [NSApp setMenu:nativeAppMenu->GetNative()];
-    }
-    else
-    {
-        [NSApp setMenu:nullptr];
-    }
-    
-    // remove window menu items from appmenu?
+    [self showAppMenuOnly];
     
     [super resignKeyWindow];
 }
@@ -1403,21 +2377,63 @@ NSArray* AllLoopModes = [NSArray arrayWithObjects: NSDefaultRunLoopMode, NSEvent
 - (void)windowDidMove:(NSNotification *)notification
 {
     AvnPoint position;
-    _parent->GetPosition(&position);
-    _parent->BaseEvents->PositionChanged(position);
+    
+    if(_parent != nullptr)
+    {
+        _parent->GetPosition(&position);
+        _parent->BaseEvents->PositionChanged(position);
+    }
 }
 
-// TODO this breaks resizing.
-/*- (void)windowDidResize:(NSNotification *)notification
+- (AvnPoint) translateLocalPoint:(AvnPoint)pt
 {
+    pt.Y = [self frame].size.height - pt.Y;
+    return pt;
+}
+
+- (void)sendEvent:(NSEvent *)event
+{
+    [super sendEvent:event];
     
-    auto parent = dynamic_cast<IWindowStateChanged*>(_parent.operator->());
-    
-    if(parent != nullptr)
+    /// This is to detect non-client clicks. This can only be done on Windows... not popups, hence the dynamic_cast.
+    if(_parent != nullptr && dynamic_cast<WindowImpl*>(_parent.getRaw()) != nullptr)
     {
-        parent->WindowStateChanged();
+        switch(event.type)
+        {
+            case NSEventTypeLeftMouseDown:
+            {
+                AvnView* view = _parent->View;
+                NSPoint windowPoint = [event locationInWindow];
+                NSPoint viewPoint = [view convertPoint:windowPoint fromView:nil];
+                
+                if (!NSPointInRect(viewPoint, view.bounds))
+                {
+                    auto avnPoint = [AvnView toAvnPoint:windowPoint];
+                    auto point = [self translateLocalPoint:avnPoint];
+                    AvnVector delta;
+                   
+                    _parent->BaseEvents->RawMouseEvent(NonClientLeftButtonDown, [event timestamp] * 1000, AvnInputModifiersNone, point, delta);
+                }
+            }
+            break;
+                
+            case NSEventTypeMouseEntered:
+            {
+                _parent->UpdateCursor();
+            }
+            break;
+                
+            case NSEventTypeMouseExited:
+            {
+                [[NSCursor arrowCursor] set];
+            }
+            break;
+                
+            default:
+                break;
+        }
     }
-}*/
+}
 @end
 
 class PopupImpl : public virtual WindowBaseImpl, public IAvnPopup
@@ -1429,44 +2445,54 @@ private:
     END_INTERFACE_MAP()
     virtual ~PopupImpl(){}
     ComPtr<IAvnWindowEvents> WindowEvents;
-    PopupImpl(IAvnWindowEvents* events) : WindowBaseImpl(events)
+    PopupImpl(IAvnWindowEvents* events, IAvnGlContext* gl) : WindowBaseImpl(events, gl)
     {
         WindowEvents = events;
         [Window setLevel:NSPopUpMenuWindowLevel];
     }
-    
 protected:
     virtual NSWindowStyleMask GetStyle() override
     {
         return NSWindowStyleMaskBorderless;
     }
     
-    virtual HRESULT Resize(double x, double y) override
+    virtual HRESULT Resize(double x, double y, AvnPlatformResizeReason reason) override
     {
+        START_COM_CALL;
+        
         @autoreleasepool
         {
-            [Window setContentSize:NSSize{x, y}];
+            if (Window != nullptr)
+            {
+                [Window setContentSize:NSSize{x, y}];
             
-            [Window setFrameTopLeftPoint:ToNSPoint(ConvertPointY(lastPositionSet))];
+                [Window setFrameTopLeftPoint:ToNSPoint(ConvertPointY(lastPositionSet))];
+            }
+            
             return S_OK;
         }
     }
+public:
+    virtual bool ShouldTakeFocusOnShow() override
+    {
+        return false;
+    }
 };
 
-extern IAvnPopup* CreateAvnPopup(IAvnWindowEvents*events)
+extern IAvnPopup* CreateAvnPopup(IAvnWindowEvents*events, IAvnGlContext* gl)
 {
     @autoreleasepool
     {
-        IAvnPopup* ptr = dynamic_cast<IAvnPopup*>(new PopupImpl(events));
+        IAvnPopup* ptr = dynamic_cast<IAvnPopup*>(new PopupImpl(events, gl));
         return ptr;
     }
 }
 
-extern IAvnWindow* CreateAvnWindow(IAvnWindowEvents*events)
+extern IAvnWindow* CreateAvnWindow(IAvnWindowEvents*events, IAvnGlContext* gl)
 {
     @autoreleasepool
     {
-        IAvnWindow* ptr = (IAvnWindow*)new WindowImpl(events);
+        IAvnWindow* ptr = (IAvnWindow*)new WindowImpl(events, gl);
         return ptr;
     }
 }
