@@ -14,8 +14,13 @@ jobs:
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v1
       with:
-        dotnet-version: '3.0.x'
+        dotnet-version: '6.0.x'
 
+    - name: Generate avalonia-native.h
+      run: |
+        export PATH="`pwd`/sdk:$PATH"
+        cd src/tools/MicroComGenerator; dotnet run -f net6.0 -i ../../idl/avn.idl --cpp ../../../inc/avalonia-native.h
+      
     - name: Build with XCode
       run: xcodebuild -sdk macosx -configuration Release -workspace src/OSX/Avalonia.Native.OSX.xcodeproj/project.xcworkspace -scheme Avalonia.Native.OSX build -derivedDataPath ./
       
