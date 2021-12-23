@@ -25,7 +25,9 @@ jobs:
       run: xcodebuild -sdk macosx -configuration Release -workspace src/native/Avalonia.Native.OSX.xcodeproj/project.xcworkspace -scheme Avalonia.Native.OSX build -derivedDataPath ./
       
     - name: Copy dylib
-      run: cp Build/Products/Release/libAvalonia.Native.OSX.dylib lib/libAvaloniaNative.dylib
+      run: |
+        mkdir lib
+        cp Build/Products/Release/libAvalonia.Native.OSX.dylib lib/libAvaloniaNative.dylib
       
     - name: Upload dylib
       uses: actions/upload-artifact@v1.0.0
