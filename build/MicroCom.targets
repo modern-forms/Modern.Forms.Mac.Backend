@@ -31,5 +31,14 @@
   <PropertyGroup>
     <_AvaloniaPatchComInterop>true</_AvaloniaPatchComInterop>
   </PropertyGroup>
-  <!--<Import Project="$(MSBuildThisFileDirectory)/BuildTargets.targets" />-->
+
+  <Target Name="PatchMicroComAssembly"
+          AfterTargets="CoreCompile">
+    
+    <Message Importance="high" Text="Patching MicroCom assembly $(IntermediateOutputPath)Modern.Forms.Mac.Backend.dll" />
+    
+    <Exec Command="dotnet &quot;$(MSBuildThisFileDirectory)../src/tools/MicroComPatcher/bin/$(Configuration)/net6.0/MicroComPatcher.dll&quot; &quot;$(IntermediateOutputPath)Modern.Forms.Mac.Backend.dll&quot;"
+          LogStandardErrorAsError="true" />
+  </Target>
+
 </Project>

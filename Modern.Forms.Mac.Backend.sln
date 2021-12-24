@@ -4,6 +4,10 @@ VisualStudioVersion = 17.0.31912.275
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Modern.Forms.Mac.Backend", "src\Modern.Forms.Mac.Backend\Modern.Forms.Mac.Backend.csproj", "{13915EA9-EA30-4ED3-8979-3B76EDEB3332}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MicroComPatcher", "src\tools\MicroComPatcher\MicroComPatcher.csproj", "{E1127977-2BE4-4E6D-841B-421C800F307F}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MicroComGenerator", "src\tools\MicroComGenerator\MicroComGenerator.csproj", "{E54F7D37-6480-4498-9E33-89900AACEC41}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -14,6 +18,14 @@ Global
 		{13915EA9-EA30-4ED3-8979-3B76EDEB3332}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{13915EA9-EA30-4ED3-8979-3B76EDEB3332}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{13915EA9-EA30-4ED3-8979-3B76EDEB3332}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1127977-2BE4-4E6D-841B-421C800F307F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1127977-2BE4-4E6D-841B-421C800F307F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1127977-2BE4-4E6D-841B-421C800F307F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E1127977-2BE4-4E6D-841B-421C800F307F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E54F7D37-6480-4498-9E33-89900AACEC41}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E54F7D37-6480-4498-9E33-89900AACEC41}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E54F7D37-6480-4498-9E33-89900AACEC41}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E54F7D37-6480-4498-9E33-89900AACEC41}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
