@@ -14,19 +14,26 @@ jobs:
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v1
       with:
-        dotnet-version: '3.0.x'
+        dotnet-version: '6.0.x'
 
+    - name: Generate avalonia-native.h
+      run: |
+        export PATH="`pwd`/sdk:$PATH"
+        cd src/tools/MicroComGenerator; dotnet run -f net6.0 -c Release -i ../../avn.idl --cpp ../../../inc/avalonia-native.h
+      
     - name: Build with XCode
-      run: xcodebuild -sdk macosx -configuration Release -workspace src/OSX/Avalonia.Native.OSX.xcodeproj/project.xcworkspace -scheme Avalonia.Native.OSX build -derivedDataPath ./
+      run: xcodebuild -sdk macosx -configuration Release -workspace src/native/Avalonia.Native.OSX.xcodeproj/project.xcworkspace -scheme Avalonia.Native.OSX build -derivedDataPath ./
       
     - name: Copy dylib
-      run: cp Build/Products/Release/libAvalonia.Native.OSX.dylib lib/libAvaloniaNative.dylib
+      run: |
+        mkdir lib
+        cp Build/Products/Release/libAvalonia.Native.OSX.dylib lib/libAvaloniaNative.dylib
       
-    - name: Install CastXML
-      run: brew install castxml
-      
-    - name: Create global.json
-      run: dotnet new globaljson --sdk-version "3.0.103"
+    - name: Upload dylib
+      uses: actions/upload-artifact@v1.0.0
+      with:
+        name: dylib
+        path: lib/libAvaloniaNative.dylib
       
     - name: Build with dotnet
       run: dotnet build Modern.Forms.Mac.Backend.sln -c Release
@@ -35,4 +42,4 @@ jobs:
       uses: actions/upload-artifact@v1.0.0
       with:
         name: NuGet Package
-        path: bin/Release/
+        path: src/Modern.Forms.Mac.Backend/bin/Release/
